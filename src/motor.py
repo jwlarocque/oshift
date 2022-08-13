@@ -7,19 +7,12 @@ import microcontroller
 
 MAX_DUTY_CYCLE = 2 ** 16 - 1
 MIN_DUTY_CYCLE = 2 ** 15 + 2 ** 14 # min "on" duty cycle
-# once stable within this many many encoder ticks of the target,
+# once stable within this many many encoder ticks of the target, stop
 TARGET_APPROACH = 5
-# if the measured position diverges from the target by this many ticks,
-# we will attempt to recenter on the target
-TARGET_DEPARTURE = 100
-# sleep time (seconds) between async iterations when moving
-MOVE_SLEEP = 0.01
-# sleep time (seconds) between async iterations when stopped
-CHECK_SLEEP = 0.5
 # PID gains
 P = 0.08
 I = 1.0
-D = -0.03
+D = -0.04
 
 class Motor:
     def __init__(
@@ -61,7 +54,7 @@ class Motor:
 
     # given distance to target, return normalized velocity
     # to request from motor
-    # TODO: implement integral term?
+    # TODO: PID really necessary?
     def apply_pid(self, dist, rate):
         return max(-1, min(1, P * dist + D * rate))
 
@@ -71,6 +64,7 @@ class Motor:
             return
         self.seeking = True
         last_pos = self.encoder.position
+        last_time = time.monotonic_ns()
         request_velocity = 0.0
         dist = self.target - self.encoder.position
         counter = 0 # TODO: remove debug
@@ -80,15 +74,18 @@ class Motor:
             or abs(dist) > TARGET_APPROACH
         ):
             dist = self.target - self.encoder.position
-            rate = (self.encoder.position - last_pos) / 0.1 # hardcode time TODO: convert to time.monotonic_ns()
+            elapsed = time.monotonic_ns() - last_time
+            # rate in encoder steps per 10 ms
+            # (keeps floats in a sane place)
+            rate = (self.encoder.position - last_pos) / (elapsed / 10000000)
             request_velocity = self.apply_pid(dist, rate)
             last_pos = self.encoder.position
-            # last_time = time.monotonic_ns()
+            last_time = time.monotonic_ns()
             self.set_velocity(request_velocity)
             if counter == 10:
                 counter = 0
                 print(
-                    f"pos: {self.encoder.position}, "
+                    f"elapsed: {elapsed}, pos: {self.encoder.position}, "
                     + f"target: {self.target}, real_v: {rate}, "
                     + f"req_v: {request_velocity}, "
                     + f"req_duty: {int(abs(request_velocity) * (MAX_DUTY_CYCLE - MIN_DUTY_CYCLE) + MIN_DUTY_CYCLE)}")
