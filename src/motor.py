@@ -2,6 +2,7 @@ import time
 import asyncio
 import pwmio
 import rotaryio
+import keypad
 import microcontroller
 
 
@@ -9,6 +10,16 @@ MAX_DUTY_CYCLE = 2 ** 16 - 1
 MIN_DUTY_CYCLE = 2 ** 15 + 2 ** 14 # min "on" duty cycle
 # once stable within this many many encoder ticks of the target, stop
 TARGET_APPROACH = 5
+# number of encoder detents
+ENC_DIVISOR = 2
+# total length of travel in rotations
+MAX_POS = 3000
+# distance to back off before starting to zero
+ZERO_BACKOFF = 800
+# velocity of fast zero
+ZERO_VELOCITY_FAST = 0.8
+# velocity of slow zero
+ZERO_VELOCITY_SLOW = 0.2
 # PID gains
 P = 0.08
 I = 1.0
@@ -20,7 +31,8 @@ class Motor:
         forward_pins: list[microcontroller.Pin],
         reverse_pins: list[microcontroller.Pin],
         encoder_pin1: microcontroller.Pin,
-        encoder_pin2: microcontroller.Pin
+        encoder_pin2: microcontroller.Pin,
+        limit_pin: microcontroller.Pin
     ):
         self.forward_pwms = []
         self.reverse_pwms = []
@@ -30,17 +42,19 @@ class Motor:
         for pin in reverse_pins:
             self.reverse_pwms.append(
                 pwmio.PWMOut(pin, frequency=5000, duty_cycle=0))
-        self.encoder = rotaryio.IncrementalEncoder(encoder_pin1, encoder_pin2)
+        self.encoder = rotaryio.IncrementalEncoder(encoder_pin1, encoder_pin2, ENC_DIVISOR)
+        self.limiter = keypad.Keys((limit_pin,), value_when_pressed=True)
+
         self.target = 0
         self.seeking = False
 
-    def set_target(self, new_target: int):
+    def __set_target(self, new_target: int):
         if new_target == self.target:
             return
         self.seeking = True
         self.target = new_target
 
-    def set_velocity(self, velocity: float):
+    def __set_velocity(self, velocity: float):
         off_group = self.reverse_pwms + self.forward_pwms if velocity == 0 else (self.reverse_pwms if velocity > 0 else self.forward_pwms)
         for output in off_group:
             output.duty_cycle = 0
@@ -55,8 +69,37 @@ class Motor:
     # given distance to target, return normalized velocity
     # to request from motor
     # TODO: PID really necessary?
-    def apply_pid(self, dist, rate):
+    def __apply_pid(self, dist, rate):
         return max(-1, min(1, P * dist + D * rate))
+
+    async def __zero_velocity(self, velocity):
+        self.seeking = True
+        self.__set_velocity(velocity)
+
+        while True:
+            event = self.limiter.events.get()
+            if event and event.pressed:
+                print(f"event during zeroing: {event}")
+                self.encoder.position = 0
+                self.__set_velocity(0)
+                break
+            await asyncio.sleep(0)
+
+        self.seeking = False
+        self.target = 0
+
+    async def zero(self):
+        print(f"Zeroing.!! Backing off to {self.encoder.position + ZERO_BACKOFF}")
+        self.target = 0
+        await self.goto(self.encoder.position + ZERO_BACKOFF)
+        print("Done backing off. Starting fast approach.")
+        await self.__zero_velocity(-1 * abs(ZERO_VELOCITY_FAST))
+        print("Fast zero complete, backing halfway off.")
+        await self.goto(0.6 * ZERO_BACKOFF)
+        print("Done backing off. Starting slow approach.")
+        await self.__zero_velocity(-1 * abs(ZERO_VELOCITY_SLOW))
+        print(f"Done zeroing.  Current position: {self.encoder.position}")
+
 
     async def goto(self, target):
         self.target = target
@@ -78,10 +121,10 @@ class Motor:
             # rate in encoder steps per 10 ms
             # (keeps floats in a sane place)
             rate = (self.encoder.position - last_pos) / (elapsed / 10000000)
-            request_velocity = self.apply_pid(dist, rate)
+            request_velocity = self.__apply_pid(dist, rate)
             last_pos = self.encoder.position
             last_time = time.monotonic_ns()
-            self.set_velocity(request_velocity)
+            self.__set_velocity(request_velocity)
             if counter == 10:
                 counter = 0
                 print(
@@ -93,4 +136,4 @@ class Motor:
             await asyncio.sleep(0)
         print(self.encoder.position)
         self.seeking = False
-        self.set_velocity(0.0)
+        self.__set_velocity(0.0)
