@@ -11,6 +11,7 @@ import json
 from motor import Motor
 from comms import OShiftService
 import config
+import status
 
 # -
 
@@ -32,108 +33,131 @@ M3 = board.P1_06 # forward 2
 E0 = board.P0_20
 E1 = board.P0_22
 
+MODE_TIME = 2 # time to hold button to switch modes, in milliseconds
+
 led = digitalio.DigitalInOut(board.LED)
 led.direction = digitalio.Direction.OUTPUT
 
 motor = Motor([M0], [M1], E0, E1, B0)
+keys = keypad.Keys((B1, B2, B3), value_when_pressed=True)
 
-# TODO: this is actually the main loop, just rename it
-async def catch_button_transitions():
-    keys = keypad.Keys((B1, B2, B3), value_when_pressed=True)
+async def main():
+    # zero and return to saved detent
+    # await motor.zero()
+    # handle_detent()
+    # main (shifting) loop
     while True:
         event = keys.events.get()
         if event:
-            print(event)
-            if event.key_number == 0 and event.pressed:
-                asyncio.create_task(motor.goto(motor.target + 300))
-            elif event.key_number == 1 and event.pressed:
-                asyncio.create_task(motor.goto(motor.target - 300))
-            elif event.key_number == 2 and event.pressed:
-                asyncio.create_task(motor.zero())
-            # print(motor.target)
-            # print(motor.seeking)
+            if event.key_number in (0, 1):
+                handle_shift_input(event)
+            if event.key_number == 2 and event.pressed:
+                hold_type = await await_release(2, [2, 5], True)
+                if hold_type == 0:
+                    await config_loop()
+                    print("!!! SHIFT MODE !!!") # TODO: remove
+                elif hold_type == 1:
+                    await motor.zero()
+                    handle_detent()
+
         await asyncio.sleep(0)
 
 
-# == request handlers ========
-
-def handle_num_axes(set: bool, b: bytes):
-    if set:
-        print("err: number of axes is read-only")
-
-def handle_detent(set: bool, b: bytes):
-    axis = b[0]
-    detent = b[1]
-    if set:
-        target_pos = config.config["axes"][axis]["detents"][detent]["position"]
-        print(f"axis {axis} going to detent {detent}, {target_pos}")
-        asyncio.create_task(motor.goto(target_pos))
-    else:
-        pass # TODO: return current detent
+def handle_shift_input(event):
+    if event.pressed:
+        if event.key_number == 1:
+            status.status["target_detent"] = min(
+                status.status["target_detent"] + 1,
+                len(config.config["axes"][0]["detents"]) - 1)
+        else:
+            status.status["target_detent"] = max(status.status["target_detent"] - 1, 0)
+        handle_detent()
 
 
-def printer(message: str):
-    def ret(set, b):
-        print(message)
-    return ret
-
-param_handlers = [
-    printer("number of axes"),
-    printer("axis length, mm"),
-    printer("axis type"),
-    printer("num detents"),
-    printer("detent position"),
-    printer("overshoot method"),
-    printer("overshoot proportion"),
-    printer("overshoot distance"),
-    handle_detent,
-    printer("position")
-]
-
-async def handle_request(req_bytes):
-    set = False
-    action_int = req_bytes[0]
-    if action_int == 0:
-        print("get")
-    elif action_int == 1:
-        print("set")
-        set = True
-    else:
-        print("err")
-        return
-
-    parameter_int = req_bytes[1]
-    if parameter_int < len(param_handlers):
-        param_handlers[parameter_int](set, req_bytes[2:])
-    else:
-        print(f"error: no param {parameter_int}")
+def handle_detent():
+    target_position = config.config["axes"][0]["detents"][status.status["target_detent"]]["position"]
+    asyncio.create_task(motor_goto(target_position))
 
 
-async def main():
-    print("hello!")
-    asyncio.create_task(motor.goto(100))
-    # while True:
+async def motor_goto(target_position):
+    await motor.goto(target_position)
+    status.status["position"] = motor.get_position()
+    status.save()
 
 
-            # before_read = time.monotonic_ns()
-            # if uart.in_waiting:
-            #     s = uart.read(nbytes=3)
-            #     print(f"read took {(time.monotonic_ns() - before_read) / 1000000}ms")
-            # else:
-            #     s = None
-            # if s:
-            #     try:
-            #         result = f"going to {int(s)}"
-            #         asyncio.create_task(motor.goto(int(s)))
-            #     except Exception as e:
-            #         result = repr(e)
-            #     print(result)
-            #     uart.write(result.encode("utf-8"))
-            # await asyncio.sleep(1)
-        # await asyncio.sleep(0)
-    # input_task = asyncio.create_task(catch_button_transitions())
-    # await asyncio.gather(input_task)
-    print("goodbye")
+async def config_loop():
+    print("!!! CONFIG MODE !!!") # TODO: remove
+    # mode 0 -> global offset (barrel adjuster)
+    # mode 1 -> current detent position
+    # mode 2 -> number of detents
+    mode = 0
+    while True:
+        event = keys.events.get()
+        if event:
+            if event.pressed:
+                if event.key_number == 2:
+                    hold_type = await await_release(2, [2], True)
+                    if hold_type == -1:
+                        mode = (mode + 1) % 3
+                        print(f"Mode: {mode}")
+                    else:
+                        return
+                else:
+                    if mode == 0:
+                        if event.key_number == 0:
+                            config.decrement_offset()
+                        elif event.key_number == 1:
+                            config.increment_offset()
+                        handle_detent()
+                    elif mode == 1:
+                        if event.key_number == 0:
+                            config.decrement_detent(status.status["target_detent"])
+                        elif event.key_number == 1:
+                            config.increment_detent(status.status["target_detent"])
+                    elif mode == 2:
+                        if event.key_number == 0:
+                            config.pop_detent()
+                        elif event.key_number == 1:
+                            config.append_detent()
+        await asyncio.sleep(0)
+            
 
 
-asyncio.run(catch_button_transitions())
+async def await_release(
+    key_num: int,
+    timings: list = [],
+    short_circuit: bool = False
+) -> int:
+    """ Awaits button release.
+    
+    Args:
+        key_num: The number of the key (in global `keys`) to watch.
+        timings: An ordered list of times in seconds.
+        short_circuit: Whether to return immediately once the greatest timing
+            is reached.
+
+    Returns:
+        -1 once the specified key is released, if no time in timings has
+        elapsed. Otherwise, the index of the greatest time in timings which has
+        elapsed.
+    """
+    entry_time = time.monotonic()
+    while True:
+        event = keys.events.get()
+        if event and event.released and event.key_number == key_num:
+            now = time.monotonic()
+            if len(timings) == 0:
+                return -1
+            for i, timing in enumerate(timings):
+                if now - entry_time < timing:
+                    return i - 1
+            return len(timings) - 1
+        if (short_circuit
+            and len(timings) > 1
+            and time.monotonic() - entry_time > timings[-1]
+        ):
+            return len(timings) - 1
+        await asyncio.sleep(0)
+
+
+asyncio.run(main())

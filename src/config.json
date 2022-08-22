@@ -4,12 +4,37 @@
         "length_mm": 50,
         "type": 0,
         "detents": [{
-            "position": 0,
+            "position": 500,
             "overshoot_method": 1,
             "overshoot_proportion": 0.1,
             "overshoot_distance": 10
         }, {
-            "position": 300,
+            "position": 1000,
+            "overshoot_method": 1,
+            "overshoot_proportion": 0.1,
+            "overshoot_distance": 10
+        }, {
+            "position": 1500,
+            "overshoot_method": 1,
+            "overshoot_proportion": 0.1,
+            "overshoot_distance": 10
+        }, {
+            "position": 2000,
+            "overshoot_method": 1,
+            "overshoot_proportion": 0.1,
+            "overshoot_distance": 10
+        }, {
+            "position": 2500,
+            "overshoot_method": 1,
+            "overshoot_proportion": 0.1,
+            "overshoot_distance": 10
+        }, {
+            "position": 3000,
+            "overshoot_method": 1,
+            "overshoot_proportion": 0.1,
+            "overshoot_distance": 10
+        }, {
+            "position": 3500,
             "overshoot_method": 1,
             "overshoot_proportion": 0.1,
             "overshoot_distance": 10

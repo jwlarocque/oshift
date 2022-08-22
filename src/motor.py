@@ -48,12 +48,6 @@ class Motor:
         self.target = 0
         self.seeking = False
 
-    def __set_target(self, new_target: int):
-        if new_target == self.target:
-            return
-        self.seeking = True
-        self.target = new_target
-
     def __set_velocity(self, velocity: float):
         off_group = self.reverse_pwms + self.forward_pwms if velocity == 0 else (self.reverse_pwms if velocity > 0 else self.forward_pwms)
         for output in off_group:
@@ -79,7 +73,6 @@ class Motor:
         while True:
             event = self.limiter.events.get()
             if event and event.pressed:
-                print(f"event during zeroing: {event}")
                 self.encoder.position = 0
                 self.__set_velocity(0)
                 break
@@ -89,19 +82,16 @@ class Motor:
         self.target = 0
 
     async def zero(self):
-        print(f"Zeroing.!! Backing off to {self.encoder.position + ZERO_BACKOFF}")
+        print(f"Zeroing")
         self.target = 0
-        await self.goto(self.encoder.position + ZERO_BACKOFF)
-        print("Done backing off. Starting fast approach.")
+        await self.__goto(self.encoder.position + ZERO_BACKOFF)
         await self.__zero_velocity(-1 * abs(ZERO_VELOCITY_FAST))
-        print("Fast zero complete, backing halfway off.")
-        await self.goto(0.6 * ZERO_BACKOFF)
-        print("Done backing off. Starting slow approach.")
+        await self.__goto(0.6 * ZERO_BACKOFF)
         await self.__zero_velocity(-1 * abs(ZERO_VELOCITY_SLOW))
         print(f"Done zeroing.  Current position: {self.encoder.position}")
 
 
-    async def goto(self, target):
+    async def __goto(self, target):
         self.target = target
         if self.seeking:
             return
@@ -113,7 +103,7 @@ class Motor:
         counter = 0 # TODO: remove debug
         
         while (
-            abs(request_velocity) > 0.2 
+            abs(request_velocity) > 0.1 
             or abs(dist) > TARGET_APPROACH
         ):
             dist = self.target - self.encoder.position
@@ -125,8 +115,14 @@ class Motor:
             last_pos = self.encoder.position
             last_time = time.monotonic_ns()
             self.__set_velocity(request_velocity)
-            if counter == 10:
-                counter = 0
+
+            # check limit switch so as not to run off end of axis
+            event = self.limiter.events.get()
+            if event and event.pressed:
+                self.encoder.position = 0
+                self.__set_velocity(0)
+
+            if counter % 10 == 0:
                 print(
                     f"elapsed: {elapsed}, pos: {self.encoder.position}, "
                     + f"target: {self.target}, real_v: {rate}, "
@@ -137,3 +133,13 @@ class Motor:
         print(self.encoder.position)
         self.seeking = False
         self.__set_velocity(0.0)
+
+    async def goto(self, target):
+        print(f"going to: {target}")
+        if target > 0:
+            await self.__goto(target)
+        else:
+            print(f"Target ({target}) less than zero.")
+
+    def get_position(self):
+        return self.encoder.position
