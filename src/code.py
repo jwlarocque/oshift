@@ -10,6 +10,7 @@ import json
 
 from motor import Motor
 from comms import OShiftService
+import position
 import config
 import status
 
@@ -38,7 +39,8 @@ MODE_TIME = 2 # time to hold button to switch modes, in milliseconds
 led = digitalio.DigitalInOut(board.LED)
 led.direction = digitalio.Direction.OUTPUT
 
-motor = Motor([M0], [M1], E0, E1, B0)
+encoder = position.Encoder(E0, E1, B0)
+motor = Motor([M0], [M1], encoder)
 keys = keypad.Keys((B1, B2, B3), value_when_pressed=True)
 
 async def main():
@@ -81,7 +83,7 @@ def handle_detent():
 
 async def motor_goto(target_position):
     await motor.goto(target_position)
-    status.status["position"] = motor.get_position()
+    status.status["position"] = motor.position.current
     status.save()
 
 
